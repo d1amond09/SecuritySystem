@@ -1,14 +1,15 @@
 using Microsoft.AspNetCore.Mvc;
+using SecuritySystem.Api.Mappers;
 using SecuritySystem.Application.Dtos;
 using SecuritySystem.Application.Interfaces;
 using SecuritySystem.Application.UseCases.AnalyzeCode;
+using SecuritySystem.Application.UseCases.AnalyzeFile;
 using SecuritySystem.Application.UseCases.AnalyzeProject;
 using SecuritySystem.Infrastructure.Analysis;
+using SecuritySystem.Infrastructure.Configuration;
 using SecuritySystem.Infrastructure.Neural;
 using SecuritySystem.Infrastructure.Persistence;
-using SecuritySystem.Infrastructure.Configuration;
 using SecuritySystem.Infrastructure.Providers;
-using SecuritySystem.Api.Mappers;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -29,10 +30,11 @@ builder.Services.AddTransient<IPatchVerifier, RoslynPatchVerifier>();
 
 // Use Cases
 builder.Services.AddTransient<AnalyzeCodeCommandHandler>();
-builder.Services.AddTransient<AnalyzeProjectCommandHandler>(); // <-- Новый Use Case
+builder.Services.AddTransient<AnalyzeProjectCommandHandler>();
+builder.Services.AddTransient<AnalyzeFileCommandHandler>();
 
 // Providers
-builder.Services.AddHttpClient<ISourceCodeProvider, GitHubSourceCodeProvider>(); // <-- Провайдер GitHub
+builder.Services.AddHttpClient<ISourceCodeProvider, GitHubSourceCodeProvider>(); 
 
 // LLM
 var activeProvider = builder.Configuration["LlmSettings:ActiveProvider"];
@@ -53,7 +55,6 @@ app.UseSwaggerUI();
 
 var api = app.MapGroup("/api/v1").WithOpenApi();
 
-// Эндпоинт 1: Анализ одного фрагмента кода
 api.MapPost("/analyze/snippet", async (
 	[FromBody] AnalyzeRequestDto request,
 	[FromServices] AnalyzeCodeCommandHandler handler,
@@ -64,7 +65,6 @@ api.MapPost("/analyze/snippet", async (
 	return Results.Ok(new { AnalyzedVulnerabilityIds = ids });
 }).WithName("AnalyzeSourceCodeSnippet");
 
-// Эндпоинт 2: Анализ целого проекта с GitHub
 api.MapPost("/analyze/project", async (
 	[FromBody] AnalyzeProjectRequestDto request,
 	[FromServices] AnalyzeProjectCommandHandler handler,
@@ -74,6 +74,24 @@ api.MapPost("/analyze/project", async (
 	var ids = await handler.HandleAsync(command, ct);
 	return Results.Ok(new { AnalyzedVulnerabilityIds = ids, TotalFound = ids.Count });
 }).WithName("AnalyzeGitHubProject");
+
+api.MapPost("/analyze/file", async (
+	IFormFile file,
+	[FromServices] AnalyzeFileCommandHandler handler,
+	CancellationToken ct) =>
+{
+	if (file == null || file.Length == 0)
+	{
+		return Results.BadRequest("File is empty.");
+	}
+
+	using var reader = new StreamReader(file.OpenReadStream());
+	var content = await reader.ReadToEndAsync(ct);
+
+	var command = new AnalyzeFileCommand(file.FileName, content);
+	var ids = await handler.HandleAsync(command, ct);
+	return Results.Ok(new { AnalyzedVulnerabilityIds = ids });
+}).WithName("AnalyzeFile").DisableAntiforgery();
 
 api.MapGet("/vulnerabilities", async (
 	[FromServices] IVulnerabilityRepository repo,
